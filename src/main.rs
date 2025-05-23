@@ -3,7 +3,7 @@ use cpal::platform::{Device, Host};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use iced::widget::{ Button, button, Column, column, container, PickList, pick_list, row };
-use iced::{ Task, Size, window, Renderer };
+use iced::{ Length, Task, Size, window, Renderer };
 use iced::Theme;
 
 //mod startup;
@@ -140,6 +140,10 @@ impl Recorder {
                 .unwrap_or("EMPTY".to_string())
             ), 
             Message::SettingsSelectOutputDevice); 
+        let input_list = container(input_list)
+            .width(Length::FillPortion(1));
+        let output_list = container(output_list)
+            .width(Length::FillPortion(1));
         let control_bar = row![input_list, output_list];
         let interface = column![control_bar, record_button];
         interface
