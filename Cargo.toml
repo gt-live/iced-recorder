@@ -5,4 +5,7 @@ edition = "2024"
 
 [dependencies]
 iced = "0.13.1"
-cpal = "0.15"
+cpal = "0.15.3"
+hound = "3.5.1"
+thiserror = "2.0.12"
+rfd = "0.15.3"
