@@ -103,6 +103,8 @@ enum RecorderError {
     #[error("unable to find join_handle for control thread in state")]
     StateJoinHandleNotFound,
 
+    #[error("unable to spawn control thread: {0}")]
+    ThreadControlThreadFailedToSpawn(String),
     #[error("unable to execute join for control thread")]
     ThreadControlThreadFailedToJoin,
     //ThreadControlThreadFailedToJoin(String),
@@ -326,7 +328,7 @@ impl Recorder {
         let thread = thread::Builder::new()
             .name("cpal_wasapi_in".to_owned())
             .spawn(move || write_frame(ro, ri, &writer_2))
-            .unwrap();
+            .map_err(|error| RecorderError::ThreadControlThreadFailedToSpawn(error.to_string()))?;
 
         input_stream.play().map_err(|error| RecorderError::PlayStreamError(error.to_string()))?;
         output_stream.play().map_err(|error| RecorderError::PlayStreamError(error.to_string()))?;
