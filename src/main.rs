@@ -9,10 +9,11 @@ use iced::Theme;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 use std::thread;
-use std::fs::File;
-use std::io::BufWriter;
+use std::fs::{self, File};
+use std::io::{self, BufWriter};
 use std::path;
 use rfd::FileDialog;
+use mp3lame_encoder;
 
 //use std::thread::{self, JoinHandle};
 
@@ -108,6 +109,12 @@ enum RecorderError {
     #[error("unable to execute join for control thread")]
     ThreadControlThreadFailedToJoin,
     //ThreadControlThreadFailedToJoin(String),
+    #[error("unable to write to file: {0}")]
+    FileWriterWriterError(String),
+    #[error("unable to create write to file: {0}")]
+    FileWriterCreateError(String),
+    #[error("unable to finalize to file: {0}")]
+    FileWriterFinalizeError(String),
 }
 
 // https://github.com/iced-rs/iced/pull/2331
@@ -131,7 +138,9 @@ struct Recorder {
     input_stream: Option<cpal::Stream>,
     output_stream: Option<cpal::Stream>,
     control_thread: Option<thread::JoinHandle<Result<bool, RecorderError>>>,
-    wav_writer: Option<Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>>,
+    //wav_writer: Option<Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>>,
+    wav_writer: Option<WavWriterHandle>,
+
 }
 
 impl Default for Recorder {
@@ -282,7 +291,8 @@ impl Recorder {
 
         let spec = wav_spec_from_configs(&input_config, &output_config)?;
         //let writer = hound::WavWriter::create(PATH, spec).map_err(|error| RecorderError::FileCreationError(error.to_string()))?;
-        let writer = hound::WavWriter::create(self.recording_path.as_path(), spec).map_err(|error| RecorderError::FileCreationError(error.to_string()))?;
+        //let writer = hound::WavWriter::create(self.recording_path.as_path(), spec).map_err(|error| RecorderError::FileCreationError(error.to_string()))?;
+        let writer = Mp3Writer::<io::BufWriter<fs::File>>::create(self.recording_path.as_path(), spec).map_err(|error| RecorderError::FileCreationError(error.to_string()))?;
         let writer = Arc::new(Mutex::new(Some(writer)));
 
         // 1. Create channel to for stream_a
@@ -392,7 +402,8 @@ enum StreamCommand<T> {
 }
 
 // FUTURE: support mismatching sample_rate, sample_size
-fn wav_spec_from_configs(config_a: &cpal::SupportedStreamConfig, config_b: &cpal::SupportedStreamConfig) -> Result<hound::WavSpec, RecorderError> {
+//fn wav_spec_from_configs(config_a: &cpal::SupportedStreamConfig, config_b: &cpal::SupportedStreamConfig) -> Result<hound::WavSpec, RecorderError> {
+fn wav_spec_from_configs(config_a: &cpal::SupportedStreamConfig, config_b: &cpal::SupportedStreamConfig) -> Result<Mp3Spec, RecorderError> {
     let sample_rate_a = config_a.sample_rate().0;
     let sample_rate_b = config_b.sample_rate().0;
     if sample_rate_a != sample_rate_b {
@@ -407,11 +418,19 @@ fn wav_spec_from_configs(config_a: &cpal::SupportedStreamConfig, config_b: &cpal
     }
     //let sample_size = std::cmp::min(sample_size_a, sample_size_b);
 
-    Ok(hound::WavSpec {
+    //// HOUND
+    //Ok(hound::WavSpec {
+    //    channels: 2,
+    //    sample_rate: sample_rate_a as _,
+    //    bits_per_sample: (sample_size_a * 8) as _,
+    //    sample_format: sample_format(config_a.sample_format()),
+    //})
+    // MP3
+    Ok(Mp3Spec {
         channels: 2,
         sample_rate: sample_rate_a as _,
         bits_per_sample: (sample_size_a * 8) as _,
-        sample_format: sample_format(config_a.sample_format()),
+        //sample_format: sample_format(config_a.sample_format()),
     })
 }
 
@@ -421,12 +440,14 @@ fn send_frame<T: cpal::Sample>(input: &[T], chan: mpsc::Sender<StreamCommand<T>>
   }
 }
 
-type WavWriterHandle = Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>;
+type WavWriterHandle = Arc<Mutex<Option<Mp3Writer<BufWriter<File>>>>>;
+//type WavWriterHandle = Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>;
 
 // FUTURE: use a builder to generate ?
-fn write_frame<T>(ra: mpsc::Receiver<StreamCommand<T>>, rb: mpsc::Receiver<StreamCommand<T>>, writer: &WavWriterHandle) -> Result<bool, RecorderError>
-where
-    T: cpal::Sample<Signed = T> + hound::Sample, // + std::fmt::Display,
+fn write_frame(ra: mpsc::Receiver<StreamCommand<f32>>, rb: mpsc::Receiver<StreamCommand<f32>>, writer: &WavWriterHandle) -> Result<bool, RecorderError>
+//fn write_frame<T>(ra: mpsc::Receiver<StreamCommand<T>>, rb: mpsc::Receiver<StreamCommand<T>>, writer: &WavWriterHandle) -> Result<bool, RecorderError>
+//where
+//    T: cpal::Sample<Signed = T> + hound::Sample, // + std::fmt::Display,
 {
     if let Ok(mut guard) = writer.try_lock() {
         if let Some(writer) = guard.as_mut() {
@@ -463,8 +484,11 @@ where
                         None => break,
                     };
 
-                    let s0 = a0.add_amp(b0);
-                    let s1 = a1.add_amp(b1);
+                    // FIX THIS
+                    //let s0 = a0.add_amp(b0);
+                    //let s1 = a1.add_amp(b1);
+                    let s0 = a0 + b0;
+                    let s1 = a1 + b1;
                     writer.write_sample(s0).ok();
                     writer.write_sample(s1).ok();
 
@@ -486,3 +510,200 @@ fn sample_format(format: cpal::SampleFormat) -> hound::SampleFormat {
         hound::SampleFormat::Int
     }
 }
+
+///////////////// Writer /////////////
+//trait F32Writer {
+//    fn write_sample(&mut self, sample: f32) -> Result<(), RecorderError>;
+//    fn finalize(&mut self) -> Result<(), RecorderError>;
+//}
+//
+//impl F32Writer for hound::WavWriter<io::BufWriter<fs::File>> {
+//    fn write_sample(&mut self, sample: f32) -> Result<(), RecorderError> {
+//        self.write_sample(sample).map_err(|error| RecorderError::FileWriterWriterError(error.to_string()))
+//    }
+//    fn finalize(&mut self) -> Result<(), RecorderError> {
+//        self.finalize().map_err(|error| RecorderError::FileWriterFinalizeError(error.to_string()))
+//        //let w: &hound::WavWriter<io::BufWriter<fs::File>> = self;
+//        //w.finalize().map_err(|error| RecorderError::FileWriterFinalizeError(error.to_string()))
+//    }
+//}
+//
+//impl F32Writer for Mp3Writer<io::BufWriter<fs::File>> {
+//    //fn write_sample<S: hound::Sample>(&mut self, sample: S) -> Result<(), RecorderError> {
+//    fn write_sample(&mut self, sample: f32) -> Result<(), RecorderError> {
+//        self.write_sample(sample).map_err(|error| RecorderError::FileWriterWriterError(error.to_string()))
+//    }
+//    fn finalize(&mut self) -> Result<(), RecorderError> {
+//        self.finalize().map_err(|error| RecorderError::FileWriterFinalizeError(error.to_string()))
+//    }
+//}
+
+
+#[derive(thiserror::Error, Debug, Clone)]
+enum Mp3WriterError {
+    #[error("unable to write to file: {0}")]
+    WriteError(String),
+    #[error("unable to create write to file: {0}")]
+    CreateError(String),
+    #[error("unable to build lame encoder: {0}")]
+    EncoderBuildError(String),
+    #[error("encoder unable to build encode input: {0}")]
+    EncoderEncodeError(String),
+    #[error("unable to write mp3 to file: {0}")]
+    WriteToFileError(String),
+    
+}
+
+
+struct Mp3Spec {
+    pub channels: u8,
+    pub sample_rate: u32,
+    pub bits_per_sample: u16,
+    //pub sample_format: SampleFormat,
+    //bytes_per_sample
+    //writer:
+    //data
+    // eg 5mins is 5
+    //pub mins_buffered: usize,
+}
+
+struct Mp3Writer<W> 
+    where W: io::Write + io::Seek
+{
+    spec: Mp3Spec,
+    writer: W,
+    //sampler_writer_buffer: Vec<f32>,
+    //buffer: Vec<Vec<f32>>,
+    buffer_interleaved: Vec<f32>,
+    buffer_mp3: Vec<u8>,
+    finalized: bool,
+
+    samples_buffered: u64,
+    samples_to_buffer: usize,
+    encoder: mp3lame_encoder::Encoder,
+}
+
+impl<W> Mp3Writer<W> 
+    where W: io::Write + io::Seek
+{
+
+    fn new(writer: W, spec: Mp3Spec) -> Result<Mp3Writer<W>, Mp3WriterError> 
+    where
+        W: io::Write + io::Seek,
+    {
+        //let samples_per_15min: usize = (spec.sample_rate * 60 * 15) as usize;
+        let chans: usize = spec.channels.into();
+        let samples_per_15min: usize = (spec.sample_rate * 60 * 15) as usize;
+        let samples_per_15min_interleaved: usize = samples_per_15min * chans;
+        let encoder = Self::initialize_encoder(&spec)?;
+        let mut mp3_out_buffer = Vec::new();
+        mp3_out_buffer.reserve(mp3lame_encoder::max_required_buffer_size(samples_per_15min));
+        Ok(Mp3Writer {
+            spec: spec,
+            writer: writer,
+            //sampler_writer_buffer: Vec::new(),
+            //buffer: vec![Vec::with_capacity(samples_per_15min); chans],
+            buffer_interleaved: Vec::with_capacity(samples_per_15min_interleaved),
+            buffer_mp3: mp3_out_buffer,
+            
+            finalized: false,
+
+            samples_buffered: 0,
+            samples_to_buffer: samples_per_15min_interleaved,
+            encoder,
+        })
+    }
+
+    fn create<P: AsRef<path::Path>>(filename: P, spec: Mp3Spec) -> Result<Mp3Writer<io::BufWriter<fs::File>>, Mp3WriterError> {
+        let file = fs::File::create(filename).map_err(|error| Mp3WriterError::CreateError(error.to_string()))?;
+        let buf_writer = io::BufWriter::new(file);
+        Mp3Writer::new(buf_writer, spec)
+    }
+
+    //fn write_sample<S: cpal::Sample>(&mut self, sample: S) -> Result<(), Mp3WriterError> {
+    fn write_sample(&mut self, sample: f32) -> Result<(), Mp3WriterError> {
+        self.write_sample_to_buffer(sample)
+        // also check if to create checkpoint
+    }
+    // use mp3lame_encoder::PCMInterleaved
+    fn write_sample_to_buffer(&mut self, sample: f32) -> Result<(), Mp3WriterError> {
+        self.buffer_interleaved.push(sample);
+        self.samples_buffered += 1;
+        Ok(())
+    }
+    //fn write_sample_to_buffer(&mut self, sample: f32) -> Result<(), Mp3WriterError> {
+    //    let chan: u64 = self.samples_buffered % self.spec.channels as u64;
+    //    self.buffer[chan as usize].push(sample);
+    //    self.samples_buffered += 1;
+    //    //self.data_bytes_written + = self.bytes_per_sample as u32;
+    //    Ok(())
+    //}
+    fn write_checkpoint(&mut self) -> Result<(), Mp3WriterError> {
+        if self.samples_buffered < (self.samples_to_buffer * self.spec.channels as usize) as u64 {
+            return Ok(());
+        }
+        // TODO: write to actual checkpoint
+        Ok(())
+    }
+    fn finalize(&mut self) -> Result<(), Mp3WriterError> {
+        println!("FINALIZE CALLED");
+        self.write_to_path()
+    }
+
+    // TODO: write an actual checkpoint
+    fn write_to_path(&mut self) -> Result<(), Mp3WriterError> {
+
+        let input = mp3lame_encoder::InterleavedPcm(&self.buffer_interleaved);
+
+        //let input = mp3lame_encoder::DualPcm{
+        //    left: self.buffer[0].as_slice(),
+        //    right: self.buffer[1].as_slice(),
+        //};
+        println!("Encoding buffer...");
+        let encoded_size = self.encoder.encode(
+            input,
+            self.buffer_mp3.spare_capacity_mut()
+        ).map_err(|error| Mp3WriterError::EncoderEncodeError(error.to_string()))?;
+
+        // reserve can reserve more than the value you give it
+        unsafe {
+            self.buffer_mp3.set_len(self.buffer_mp3.len().wrapping_add(encoded_size));
+        }
+
+        let encoded_size = self.encoder.flush::<mp3lame_encoder::FlushNoGap>(self.buffer_mp3.spare_capacity_mut())
+            .map_err(|error| Mp3WriterError::EncoderEncodeError(error.to_string()))?;
+        unsafe {
+            self.buffer_mp3.set_len(self.buffer_mp3.len().wrapping_add(encoded_size));
+        }
+
+        println!("Writing to buffer...");
+        self.writer.write(&self.buffer_mp3)
+            .map_err(|error| Mp3WriterError::WriteToFileError(error.to_string()))?;
+        Ok(())
+    }
+
+    fn initialize_encoder(spec: &Mp3Spec) -> Result<mp3lame_encoder::Encoder, Mp3WriterError> {
+        let mut mp3_encoder = match mp3lame_encoder::Builder::new() {
+            None => return Err(Mp3WriterError::EncoderBuildError("failed to get new builder".to_string())),
+            Some(builder) => builder,
+        };
+        mp3_encoder.set_num_channels(spec.channels as u8)
+            .map_err(|error| Mp3WriterError::EncoderBuildError(error.to_string()))?;
+        mp3_encoder.set_sample_rate(spec.sample_rate)
+            .map_err(|error| Mp3WriterError::EncoderBuildError(error.to_string()))?;
+        // TODO: find out bitrate
+        mp3_encoder.set_brate(mp3lame_encoder::Bitrate::Kbps320)
+            .map_err(|error| Mp3WriterError::EncoderBuildError(error.to_string()))?;
+        mp3_encoder.set_quality(mp3lame_encoder::Quality::Best)
+            .map_err(|error| Mp3WriterError::EncoderBuildError(error.to_string()))?;
+
+        // let it blow up first so i can see if it works
+        let mp3_encoder = mp3_encoder
+            .build()
+            .map_err(|error| Mp3WriterError::EncoderBuildError(error.to_string()))?;
+            //.expect("Unable to build");
+        Ok(mp3_encoder)
+    }
+}
+
+
