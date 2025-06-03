@@ -151,7 +151,7 @@ impl Default for Recorder {
         let output_device = host.default_output_device()
             .expect("failed to find output device");
 
-        const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/recorded.wav");
+        //const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/recorded.wav");
 
         Self {
             host,
@@ -169,6 +169,8 @@ impl Default for Recorder {
         }
     }
 }
+
+const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/recorded.wav");
 
 impl Recorder {
     //fn new(_flags: ()) -> (Self, Task<Message>) {
@@ -346,6 +348,7 @@ impl Recorder {
         self.output_stream = Some(output_stream);
         self.control_thread = Some(thread);
         self.wav_writer = Some(writer);
+
         Ok(())
     }
 
@@ -375,6 +378,7 @@ impl Recorder {
         if let Err(e) = writer.lock().unwrap().take().unwrap().finalize() {
             println!("{}", e)
         }
+        self.recording_path = path::PathBuf::from(PATH);
         //println!("Recording {} complete!", PATH);
         Ok(())
     }
@@ -578,7 +582,7 @@ struct Mp3Writer<W>
     buffer_mp3: Vec<u8>,
     finalized: bool,
 
-    samples_buffered: u64,
+    samples_buffered: usize,
     samples_to_buffer: usize,
     encoder: mp3lame_encoder::Encoder,
 }
@@ -596,15 +600,17 @@ impl<W> Mp3Writer<W>
         let samples_per_15min: usize = (spec.sample_rate * 60 * 15) as usize;
         let samples_per_15min_interleaved: usize = samples_per_15min * chans;
         let encoder = Self::initialize_encoder(&spec)?;
-        let mut mp3_out_buffer = Vec::new();
-        mp3_out_buffer.reserve(mp3lame_encoder::max_required_buffer_size(samples_per_15min));
+        //let mut mp3_out_buffer = Vec::new();
+        //mp3_out_buffer.reserve(mp3lame_encoder::max_required_buffer_size(samples_per_15min));
         Ok(Mp3Writer {
             spec: spec,
             writer: writer,
             //sampler_writer_buffer: Vec::new(),
             //buffer: vec![Vec::with_capacity(samples_per_15min); chans],
+            //buffer_mp3: mp3_out_buffer,
+            // input buffer doesnt have to be exact, this is just an arbitrary number of sampels
             buffer_interleaved: Vec::with_capacity(samples_per_15min_interleaved),
-            buffer_mp3: mp3_out_buffer,
+            buffer_mp3: Vec::new(),
             
             finalized: false,
 
@@ -639,7 +645,7 @@ impl<W> Mp3Writer<W>
     //    Ok(())
     //}
     fn write_checkpoint(&mut self) -> Result<(), Mp3WriterError> {
-        if self.samples_buffered < (self.samples_to_buffer * self.spec.channels as usize) as u64 {
+        if self.samples_buffered < self.samples_to_buffer * self.spec.channels as usize {
             return Ok(());
         }
         // TODO: write to actual checkpoint
@@ -652,6 +658,7 @@ impl<W> Mp3Writer<W>
 
     // TODO: write an actual checkpoint
     fn write_to_path(&mut self) -> Result<(), Mp3WriterError> {
+        self.buffer_mp3 = Mp3Writer::<W>::initialize_buffer(&self.spec, self.samples_buffered);
 
         let input = mp3lame_encoder::InterleavedPcm(&self.buffer_interleaved);
 
@@ -703,6 +710,17 @@ impl<W> Mp3Writer<W>
             .map_err(|error| Mp3WriterError::EncoderBuildError(error.to_string()))?;
             //.expect("Unable to build");
         Ok(mp3_encoder)
+    }
+
+    fn initialize_buffer(spec: &Mp3Spec, num_samples: usize) -> Vec<u8> {
+        let chans: usize = spec.channels.into();
+        //let samples_per_15min: usize = (spec.sample_rate * 60 * 15) as usize;
+        //let samples_per_15min_interleaved: usize = samples_per_15min * chans;
+        let sample_count_interleaved = num_samples * chans;
+        //mp3_out_buffer.reserve(mp3lame_encoder::max_required_buffer_size(samples_per_15min));
+        let mut mp3_out_buffer = Vec::new();
+        mp3_out_buffer.reserve(mp3lame_encoder::max_required_buffer_size(sample_count_interleaved));
+        mp3_out_buffer
     }
 }
 
