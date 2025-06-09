@@ -16,7 +16,7 @@ use rfd::FileDialog;
 use mp3lame_encoder;
 
 use iced_recorder::streams;
-use iced_recorder::controller::{self, StreamCommand, WavWriterHandle};
+//use iced_recorder::controller::{self, StreamCommand, WavWriterHandle};
 use iced_recorder::storage;
 use iced_recorder::error::RecorderError;
 //use crate::storage;
@@ -91,13 +91,15 @@ struct Recorder {
     // configs
     recording_path: path::PathBuf,
 
-    input_sender: Option<mpsc::Sender<StreamCommand<f32>>>,
-    output_sender: Option<mpsc::Sender<StreamCommand<f32>>>,
+    //input_sender: Option<mpsc::Sender<StreamCommand<f32>>>,
+    //output_sender: Option<mpsc::Sender<StreamCommand<f32>>>,
     input_stream: Option<cpal::Stream>,
     output_stream: Option<cpal::Stream>,
-    control_thread: Option<thread::JoinHandle<Result<bool, RecorderError>>>,
+    control_thread: Option<streams::Controller>,
+    //control_thread: Option<thread::JoinHandle<Result<bool, RecorderError>>>,
     //wav_writer: Option<Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>>,
-    wav_writer: Option<WavWriterHandle>,
+    //wav_writer: Option<WavWriterHandle>,
+    wav_writer: Option<streams::WriterStream>,
 
 }
 
@@ -118,8 +120,8 @@ impl Default for Recorder {
             state: State::Stop,
             recording_path: path::PathBuf::from(PATH),
 
-            input_sender: None,
-            output_sender: None,
+            //input_sender: None,
+            //output_sender: None,
             input_stream: None,
             output_stream: None,
             control_thread: None,
@@ -249,23 +251,25 @@ impl Recorder {
             //.expect("Failed to get default output config");
         //println!("Default output config: {:?}", output_config);
 
-        let spec = controller::wav_spec_from_configs(&input_config, &output_config)?;
-        //let writer = hound::WavWriter::create(PATH, spec).map_err(|error| RecorderError::FileCreationError(error.to_string()))?;
-        //let writer = hound::WavWriter::create(self.recording_path.as_path(), spec).map_err(|error| RecorderError::FileCreationError(error.to_string()))?;
-        //let writer = storage::Mp3Writer::<io::BufWriter<fs::File>>::create(self.recording_path.as_path(), spec).map_err(|error| RecorderError::FileCreationError(error.to_string()))?;
-        let err_fn = move |err| eprintln!("an error occurred on stream: {}", err);
+        let spec = streams::wav_spec_from_configs(&input_config, &output_config)?;
+        let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
         let writer = streams::WriterStream::new(spec, self.recording_path.clone(), err_fn);
-        let writer = Arc::new(Mutex::new(Some(writer)));
+        //let writer = Arc::new(Mutex::new(Some(writer)));
+        let writer_sender = writer.get_sender();
+        let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
+        let controller = streams::Controller::new(writer_sender, err_fn);
+        let (mut sender_speaker, mut sender_mic) = controller.get_senders();
 
-        // 1. Create channel to for stream_a
-        let (ti, ri) = mpsc::channel();
-        self.input_sender = Some(ti.clone());
-        // 2. Create channel to for stream_b
-        let (to, ro) = mpsc::channel();
-        self.output_sender = Some(to.clone());
 
-        // Run the input stream on a separate thread.
-        let writer_2 = writer.clone();
+        //// 1. Create channel to for stream_a
+        //let (ti, ri) = mpsc::channel();
+        //self.input_sender = Some(ti.clone());
+        //// 2. Create channel to for stream_b
+        //let (to, ro) = mpsc::channel();
+        //self.output_sender = Some(to.clone());
+
+        //// Run the input stream on a separate thread.
+        //let writer_2 = writer.clone();
 
         let err_fn = move |err| {
             eprintln!("an error occurred on stream: {}", err);
@@ -276,7 +280,8 @@ impl Recorder {
                 self.input_device.build_input_stream(
                     &input_config.into(),
                     //move |data, _| send_frame::<f32>(data, ti_2.clone()),
-                    move |data, _| controller::send_frame::<f32>(data, ti.clone()),
+                    //move |data, _| controller::send_frame::<f32>(data, ti.clone()),
+                    move |data, _| sender_mic(data.to_vec()),
                     err_fn,
                     None,
                 ).map_err(|error| RecorderError::BuildStreamError(error.to_string()))?
@@ -288,57 +293,56 @@ impl Recorder {
             cpal::SampleFormat::F32 => {
                 self.output_device.build_input_stream(
                     &output_config.into(),
-                    move |data, _| controller::send_frame::<f32>(data, to.clone()),
                     //move |data, _| send_frame::<f32>(data, ti.clone()),
+                    //move |data, _| controller::send_frame::<f32>(data, to.clone()),
+                    move |data, _| sender_speaker(data.to_vec()),
                     err_fn,
                     None,
                 ).map_err(|error| RecorderError::BuildStreamError(error.to_string()))?
             },
             sample_format =>  return Err(RecorderError::UnsupportedSampleFormat(sample_format, "output".to_string())),
         };
-        // TODO: set thread to state
-        let thread = thread::Builder::new()
-            .name("cpal_wasapi_in".to_owned())
-            .spawn(move || controller::write_frame(ro, ri, &writer_2))
-            .map_err(|error| RecorderError::ThreadControlThreadFailedToSpawn(error.to_string()))?;
+        //// TODO: set thread to state
+        //let thread = thread::Builder::new()
+        //    .name("cpal_wasapi_in".to_owned())
+        //    .spawn(move || controller::write_frame(ro, ri, &writer_2))
+        //    .map_err(|error| RecorderError::ThreadControlThreadFailedToSpawn(error.to_string()))?;
 
         input_stream.play().map_err(|error| RecorderError::PlayStreamError(error.to_string()))?;
         output_stream.play().map_err(|error| RecorderError::PlayStreamError(error.to_string()))?;
         //writer.play();
         self.input_stream = Some(input_stream);
         self.output_stream = Some(output_stream);
-        self.control_thread = Some(thread);
+        //self.control_thread = Some(thread);
+        self.control_thread = Some(controller);
         self.wav_writer = Some(writer);
 
         Ok(())
     }
 
     fn record_stop(&mut self) -> Result<(), RecorderError> {
-        if let Some(tx) = &self.input_sender {
-            tx.send(StreamCommand::Stop).map_err(|error| RecorderError::StreamStopError(error.to_string()))?;
-        };
-        if let Some(tx) = &self.output_sender {
-            tx.send(StreamCommand::Stop).map_err(|error| RecorderError::StreamStopError(error.to_string()))?;
-        };
+        // this would have sent to controller_thread right?
+        //if let Some(tx) = &self.input_sender {
+        //    tx.send(StreamCommand::Stop).map_err(|error| RecorderError::StreamStopError(error.to_string()))?;
+        //};
+        //if let Some(tx) = &self.output_sender {
+        //    tx.send(StreamCommand::Stop).map_err(|error| RecorderError::StreamStopError(error.to_string()))?;
+        //};
         drop(self.input_stream.take());
         drop(self.output_stream.take());
-        //drop(thread);
-        let join_handle = match self.control_thread.take() {
-            Some(join_handle) => join_handle,
-            None => return Err(RecorderError::StateJoinHandleNotFound),
-        };
-        let _ = join_handle.join().map_err(|_| RecorderError::ThreadControlThreadFailedToJoin)?;
+        drop(self.control_thread.take()); //should cascade?
+        drop(self.wav_writer.take());
+        //let join_handle = match self.control_thread.take() {
+        //    Some(join_handle) => join_handle,
+        //    None => return Err(RecorderError::StateJoinHandleNotFound),
+        //};
+        //let _ = join_handle.join().map_err(|_| RecorderError::ThreadControlThreadFailedToJoin)?;
 
-        let writer = match &self.wav_writer {
-            Some(writer) => writer,
-            None => return Err(RecorderError::WavWriterNotFoundError),
-        };
-
-        //writer.lock().unwrap().take().unwrap().finalize()?;
-        drop(writer);
-        //if let Err(e) = writer.lock().unwrap().take().unwrap().finalize() {
-        //    println!("{}", e)
-        //}
+        //let writer = match &self.wav_writer {
+        //    Some(writer) => writer,
+        //    None => return Err(RecorderError::WavWriterNotFoundError),
+        //};
+        //drop(writer);
         self.recording_path = path::PathBuf::from(PATH);
         //println!("Recording {} complete!", PATH);
         Ok(())

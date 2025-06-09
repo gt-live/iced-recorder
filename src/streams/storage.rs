@@ -5,18 +5,17 @@ use std::path;
 use std::thread::{self, JoinHandle};
 use std::sync::mpsc::{channel, Sender, SendError, Receiver};
 use crate::storage::{self, Mp3Spec};
+use crate::streams::enums::{Command, StreamError};
 
 
 
-#[derive(thiserror::Error, Debug, Clone)]
-pub enum StreamError {
-    #[error("unable to get spawn child thread to write checkpoint: {0}")]
-    ChildThreadFailedToSpawn(String),
-
-
-    //#[error("unable to get config from stream device: {0}")]
-    //StreamConfigError(String),
-}
+//#[derive(thiserror::Error, Debug, Clone)]
+//pub enum StreamError {
+//    #[error("unable to get spawn child thread to write checkpoint: {0}")]
+//    ChildThreadFailedToSpawn(String),
+//    //#[error("unable to get config from stream device: {0}")]
+//    //StreamConfigError(String),
+//}
 
 //#[derive(thiserror::Error, Debug, Clone)]
 //pub enum ChildThreadError {
@@ -25,16 +24,17 @@ pub enum StreamError {
 //}
 
 
-#[derive(Clone, Debug)]
-pub enum Command {
-    Frame(Vec<f32>),
-    Stop,
-}
+//#[derive(Clone, Debug)]
+//pub enum Command {
+//    Frame(Vec<f32>),
+//    Stop,
+//}
 
 #[derive(Clone, Debug)]
 enum ChildStatus {
     Error(storage::Mp3WriterError),
     SpawnError(String),
+    RecvError(String),
     Success,
     Pending,
 }
@@ -57,6 +57,7 @@ struct RunContext {
 }
 
 // this is the outer shell "remote" held by the master
+//#[derive(Clone, Debug)]
 pub struct WriterStream {
     thread: Option<JoinHandle<()>>,
     //chan: mpsc::Receiver<Command<Vec<f32>>>,
@@ -99,6 +100,9 @@ impl WriterStream {
     fn push_command(&self, command: Command) -> Result<(), SendError<Command>> {
         self.commands.send(command)?;
         Ok(())
+    }
+    pub fn get_sender(&self) -> Sender<Command> {
+        self.commands.clone()
     }
 }
 
@@ -199,6 +203,11 @@ fn run_input(
             Some(handle) => handle.join().unwrap(),
             None => println!("No handle"),
         }
+        let child_status = match run_context.checkpoint_recvs[i].recv() {
+            Ok(status) => status,
+            Err(e) => ChildStatus::RecvError(e.to_string()),
+        };
+        run_context.checkpoint_results[i] = child_status;
         println!("{:?} {:?}", run_context.checkpoint_results[i], run_context.checkpoint_paths[i])
     }
 }
