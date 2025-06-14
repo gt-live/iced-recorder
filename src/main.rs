@@ -3,11 +3,13 @@ use cpal::platform::{Device, Host};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use iced::widget::{ Button, button, Column, column, container, PickList, pick_list, row, text, Text };
-use iced::{ Length, Task, Size, window, Renderer };
+use iced::{ Length, Task, Size, Subscription, window, Renderer };
 use iced::Theme;
+use iced::task;
+use iced::futures::StreamExt;
 
 use std::sync::{Arc, Mutex};
-use std::sync::mpsc::{self, channel};
+use std::sync::mpsc::{self, channel, Receiver};
 use std::thread;
 use std::fs::{self, File};
 use std::io::{self, BufWriter};
@@ -15,7 +17,7 @@ use std::path;
 use rfd::FileDialog;
 use mp3lame_encoder;
 
-use iced_recorder::streams;
+use iced_recorder::streams::{self, UiUpdate};
 //use iced_recorder::controller::{self, StreamCommand, WavWriterHandle};
 use iced_recorder::storage;
 use iced_recorder::error::RecorderError;
@@ -56,6 +58,7 @@ fn main() -> Result<(), iced::Error> {
     iced::application(Recorder::title, Recorder::update, Recorder::view)
         .theme(|_| Theme::Dark)
         //.centered()
+        //.subscription(Recorder::subscription)
         .window(window::Settings {
             size: Size::new(WINDOW_INITIAL_WIDTH, WINDOW_INITIAL_HEIGHT),
             ..window::Settings::default()
@@ -99,7 +102,9 @@ struct Recorder {
     input_stream: Option<cpal::Stream>,
     output_stream: Option<cpal::Stream>,
     control_thread: Option<streams::Controller>,
-    ui_thread: Option<Task::Handle>,
+    //ui_receiver: Option<Receiver<streams::UiUpdate>>,
+    ui_thread: Option<task::Handle>,
+    //ui_thread: Option<Task<UiUpdate>::Handle>,
     //control_thread: Option<thread::JoinHandle<Result<bool, RecorderError>>>,
     //wav_writer: Option<Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>>,
     //wav_writer: Option<WavWriterHandle>,
@@ -130,6 +135,7 @@ impl Default for Recorder {
             input_stream: None,
             output_stream: None,
             control_thread: None,
+            //ui_receiver: None,
             ui_thread: None,
             wav_writer: None,
         }
@@ -160,6 +166,8 @@ impl Recorder {
                 //if let Err(e) = self.record_start() {
                 //    return Task::done(Message::Error(e))
                 //}
+
+                // NOTE: this must be after the above block, for Subscription initializer
                 self.state = State::Start;
                 //Task::none()
                 task
@@ -254,8 +262,20 @@ impl Recorder {
         interface
     }
 
+    //fn subscription(&self) -> Subscription<Message> {
+    //    match (self.state, self.ui_receiver) {
+    //        (State::Start, Some(ru)) => {
+    //            Subscription::run_with_id(1, streams::progress(ru))
+    //                .map(|x| Message::PulseUpdate(x.expect("SUBSCRIPTION ERROR")))
+    //        },
+    //        _ => Subscription::none(),
+    //    }
+    //}
 
-    fn record_start(&mut self) -> Result<Task<UiUpdate>, RecorderError> {
+
+    //fn record_start(&mut self) -> Task<Message> {
+    fn record_start(&mut self) -> Result<Task<Message>, RecorderError> {
+    //fn record_start(&mut self) -> Result<(), RecorderError> {
         // The WAV file we're recording to.
         //const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/recorded.wav");
 
@@ -270,11 +290,16 @@ impl Recorder {
         //
 
         let (ui_sender, ui_receiver) = channel();
-        let (task, handle) = Task::sip(
+        //self.ui_receiver = Some(ui_receiver);
+        let (ui_task, handle) = Task::run(
             streams::progress(ui_receiver),
-            Message::PulseUpdate,
-            |sample| Message::PulseUpdate(0.0),
+            |x| Message::PulseUpdate(x.expect("SUBSCRIPTION ERROR")),
         ).abortable();
+        //let (task, handle) = Task::sip(
+        //    streams::progress(ui_receiver),
+        //    Message::PulseUpdate,
+        //    |sample| Message::PulseUpdate(0.0),
+        //).abortable();
         self.ui_thread = Some(handle.abort_on_drop());
 
         let spec = streams::wav_spec_from_configs(&input_config, &output_config)?;
@@ -343,7 +368,8 @@ impl Recorder {
         self.control_thread = Some(controller);
         self.wav_writer = Some(writer);
 
-        Ok(())
+        Ok(ui_task)
+        //Ok(())
     }
 
     fn record_stop(&mut self) -> Result<(), RecorderError> {

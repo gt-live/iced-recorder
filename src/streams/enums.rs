@@ -25,6 +25,6 @@ pub enum Command {
 #[derive(Debug, Clone)]
 pub enum UiUpdate {
     Pulse(f32),
-    Error(StreamError),
+    //Error(StreamError),
     Stop,
 }

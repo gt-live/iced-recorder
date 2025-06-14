@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced = { version = "0.14.0-dev", features = ["sipper"] }
-#iced = "0.13.1"
+#iced = { version = "0.14.0-dev", features = ["sipper"] }
+iced = "0.13.1"
 cpal = "0.15.3"
 hound = "3.5.1"
 thiserror = "2.0.12"

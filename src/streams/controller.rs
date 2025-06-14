@@ -8,7 +8,7 @@ use std::fs::{self, File};
 //use std::error::Error;
 
 use std::thread::{self, JoinHandle};
-use crate::streams::enums::{StreamError, Command, UiCommand};
+use crate::streams::enums::{StreamError, Command, UiUpdate};
 
 
 //// consider bringing this out
@@ -73,7 +73,7 @@ struct RunContext {
     recv_speaker: Receiver<Command>,
     recv_mic: Receiver<Command>,
     chained_sender: Sender<Command>,
-    ui_sender: Sender<UiCommand>,
+    ui_sender: Sender<UiUpdate>,
 }
 
 pub struct Controller {
@@ -95,7 +95,7 @@ impl Controller {
     // chained sender is the next Stream in the chain
     pub fn new<E>(
         chained_sender: Sender<Command>, 
-        ui_sender: Sender<UiCommand>, 
+        ui_sender: Sender<UiUpdate>, 
         error_callback: E
     ) -> Controller
     where E: FnMut(StreamError) + Send + 'static,
@@ -235,13 +235,13 @@ where E: FnMut(StreamError) + Send + 'static,
             break;
             //return Err(RecorderError::StorageStreamWriteError(e.to_string()));
         }
-        if let Err(e) = run_context.ui_sender.send(UiCommand::Progress(ui_sample)) {
+        if let Err(e) = run_context.ui_sender.send(UiUpdate::Pulse(ui_sample)) {
             println!("[write-frame] error sending ui sample: {}", ui_sample);
         }
     }
     println!("break for reasons");
     // cleanup here
-    run_context.ui_sender.send(UiCommand::Stop).unwrap();
+    run_context.ui_sender.send(UiUpdate::Stop).unwrap();
 }
 
 // FUTURE: use a builder to generate ?
