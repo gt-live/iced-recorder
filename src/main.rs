@@ -7,7 +7,7 @@ use iced::{ Length, Task, Size, window, Renderer };
 use iced::Theme;
 
 use std::sync::{Arc, Mutex};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, channel};
 use std::thread;
 use std::fs::{self, File};
 use std::io::{self, BufWriter};
@@ -71,6 +71,7 @@ enum Message {
     SettingsSelectInputDevice(String),
     SettingsSelectOutputDevice(String),
     SettingsSelectFilePath,
+    PulseUpdate(f32),
     Error(RecorderError),
 }
 
@@ -91,11 +92,14 @@ struct Recorder {
     // configs
     recording_path: path::PathBuf,
 
+    // todo normalize this to 100
+    volume: f32,
     //input_sender: Option<mpsc::Sender<StreamCommand<f32>>>,
     //output_sender: Option<mpsc::Sender<StreamCommand<f32>>>,
     input_stream: Option<cpal::Stream>,
     output_stream: Option<cpal::Stream>,
     control_thread: Option<streams::Controller>,
+    ui_thread: Option<Task::Handle>,
     //control_thread: Option<thread::JoinHandle<Result<bool, RecorderError>>>,
     //wav_writer: Option<Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>>,
     //wav_writer: Option<WavWriterHandle>,
@@ -122,9 +126,11 @@ impl Default for Recorder {
 
             //input_sender: None,
             //output_sender: None,
+            volume: 0.0,
             input_stream: None,
             output_stream: None,
             control_thread: None,
+            ui_thread: None,
             wav_writer: None,
         }
     }
@@ -146,11 +152,17 @@ impl Recorder {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Start => {
-                if let Err(e) = self.record_start() {
-                    return Task::done(Message::Error(e))
-                }
+                // task is a Ui update Sipper
+                let task = match self.record_start() {
+                    Err(e) => return Task::done(Message::Error(e)),
+                    Ok(task) => task,
+                };
+                //if let Err(e) = self.record_start() {
+                //    return Task::done(Message::Error(e))
+                //}
                 self.state = State::Start;
-                Task::none()
+                //Task::none()
+                task
             }
             Message::Stop => {
                 self.state = State::Stop;
@@ -187,6 +199,10 @@ impl Recorder {
                 if let Some(path) = fd {
                     self.recording_path = path;
                 }
+                Task::none()
+            },
+            Message::PulseUpdate(x) => {
+                self.volume = x;
                 Task::none()
             },
             Message::Error(e) => {
@@ -231,14 +247,15 @@ impl Recorder {
         let browse_path: Text<'_, Theme, Renderer> = text(self.recording_path.as_path().to_str().unwrap_or(""));
         let browse_path = container(browse_path)
             .width(Length::FillPortion(3));
+        let volume_bar = text(self.volume);
         let path_row = row![browse_path, browse_button];
         let control_bar = row![input_list, output_list];
-        let interface = column![control_bar, path_row, record_button];
+        let interface = column![control_bar, path_row, volume_bar, record_button];
         interface
     }
 
 
-    fn record_start(&mut self) -> Result<(), RecorderError> {
+    fn record_start(&mut self) -> Result<Task<UiUpdate>, RecorderError> {
         // The WAV file we're recording to.
         //const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/recorded.wav");
 
@@ -250,6 +267,15 @@ impl Recorder {
             .map_err(|error| RecorderError::StreamConfigError(error.to_string()))?;
             //.expect("Failed to get default output config");
         //println!("Default output config: {:?}", output_config);
+        //
+
+        let (ui_sender, ui_receiver) = channel();
+        let (task, handle) = Task::sip(
+            streams::progress(ui_receiver),
+            Message::PulseUpdate,
+            |sample| Message::PulseUpdate(0.0),
+        ).abortable();
+        self.ui_thread = Some(handle.abort_on_drop());
 
         let spec = streams::wav_spec_from_configs(&input_config, &output_config)?;
         let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
@@ -257,7 +283,7 @@ impl Recorder {
         //let writer = Arc::new(Mutex::new(Some(writer)));
         let writer_sender = writer.get_sender();
         let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
-        let controller = streams::Controller::new(writer_sender, err_fn);
+        let controller = streams::Controller::new(writer_sender, ui_sender, err_fn);
         let (mut sender_speaker, mut sender_mic) = controller.get_senders();
 
 

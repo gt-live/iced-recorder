@@ -15,3 +15,16 @@ pub enum Command {
     Frame(Vec<f32>),
     Stop,
 }
+
+//#[derive(Clone, Debug)]
+//pub enum UiCommand {
+//    Progress(f32),
+//    Stop,
+//}
+
+#[derive(Debug, Clone)]
+pub enum UiUpdate {
+    Pulse(f32),
+    Error(StreamError),
+    Stop,
+}

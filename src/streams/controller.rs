@@ -8,7 +8,7 @@ use std::fs::{self, File};
 //use std::error::Error;
 
 use std::thread::{self, JoinHandle};
-use crate::streams::enums::{StreamError, Command};
+use crate::streams::enums::{StreamError, Command, UiCommand};
 
 
 //// consider bringing this out
@@ -73,6 +73,7 @@ struct RunContext {
     recv_speaker: Receiver<Command>,
     recv_mic: Receiver<Command>,
     chained_sender: Sender<Command>,
+    ui_sender: Sender<UiCommand>,
 }
 
 pub struct Controller {
@@ -92,7 +93,11 @@ impl Drop for Controller {
 
 impl Controller {
     // chained sender is the next Stream in the chain
-    pub fn new<E>(chained_sender: Sender<Command>, error_callback: E) -> Controller
+    pub fn new<E>(
+        chained_sender: Sender<Command>, 
+        ui_sender: Sender<UiCommand>, 
+        error_callback: E
+    ) -> Controller
     where E: FnMut(StreamError) + Send + 'static,
     {
         //let (tx, rx) = channel::<Command>();
@@ -102,6 +107,7 @@ impl Controller {
             recv_speaker,
             recv_mic,
             chained_sender,
+            ui_sender,
         };
 
         let thread = thread::Builder::new()
@@ -222,14 +228,20 @@ where E: FnMut(StreamError) + Send + 'static,
             if let None = b_iter.next() { break }
             if let None = b_iter.next() { break }
         }
+        let ui_sample = frame[0];
         if let Err(e) = run_context.chained_sender.send(Command::Frame(frame)) {
             error_callback(StreamError::SendError);
             eprintln!("error sending to chained sender");
             break;
             //return Err(RecorderError::StorageStreamWriteError(e.to_string()));
         }
+        if let Err(e) = run_context.ui_sender.send(UiCommand::Progress(ui_sample)) {
+            println!("[write-frame] error sending ui sample: {}", ui_sample);
+        }
     }
     println!("break for reasons");
+    // cleanup here
+    run_context.ui_sender.send(UiCommand::Stop).unwrap();
 }
 
 // FUTURE: use a builder to generate ?
