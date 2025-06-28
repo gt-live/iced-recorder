@@ -22,6 +22,13 @@ use crate::streams::enums::{StreamError, Command, UiUpdate};
 //    RecvError,
 //}
 
+// TODO: make this make more sense
+pub fn assert_wav_spec_from_configs(config: &cpal::SupportedStreamConfig, spec: storage::Mp3Spec) -> bool {
+    let sample_rate = config.sample_rate().0;
+    let sample_size = config.sample_format().sample_size();
+    let channels = config.channels();
+    spec.sample_rate == sample_rate as usize && spec.bits_per_sample as usize == sample_size * 8
+}
 
 // FUTURE: support mismatching sample_rate, sample_size
 //fn wav_spec_from_configs(config_a: &cpal::SupportedStreamConfig, config_b: &cpal::SupportedStreamConfig) -> Result<hound::WavSpec, RecorderError> {
@@ -151,6 +158,13 @@ impl Controller {
         (sender_speaker, sender_mic)
     }
 
+    pub fn get_senders_2(&self) -> (Sender<Command>, Sender<Command>) 
+    {
+        let t_speaker = self.commands_speaker.clone();
+        let t_mic = self.commands_mic.clone();
+        (t_speaker, t_mic)
+    }
+
     // TODO: failed to send error, see storage, bring storage error out
     fn push_command(&self, command: Command) -> Result<(), SendError<Command>> {
         //self.commands.send(command)
@@ -175,7 +189,12 @@ pub type WavWriterHandle = Arc<Mutex<Option<streams::WriterStream>>>;
 fn run_input<E>(run_context: RunContext, mut error_callback: E) 
 where E: FnMut(StreamError) + Send + 'static,
 {
+    let mut count = 0;
     loop {
+        count = (count + 1) % 4000;
+        if count == 99 {
+            println!("[write_frame] {}", count);
+        }
         let sample_a = match run_context.recv_speaker.recv() {
             Ok(Command::Frame(a)) => a,
             Err(e) => { 

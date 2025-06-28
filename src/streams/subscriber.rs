@@ -15,10 +15,16 @@ pub fn progress(rx: Receiver<UiUpdate>) -> impl Stream<Item = Result<f32, ()>> {
                     break;
                 },
             };
-            output.send(x).await;
+            let amp_in_db = f32_to_db(x);
+            output.send(amp_in_db).await;
         }
         Ok(())
     })
+}
+
+// fourier properties 2, module 3, dft 2
+fn f32_to_db(amp: f32) -> f32 {
+    20.0 * amp.abs().log10()
 }
 
 //pub fn progress(rx: Receiver<UiUpdate>) -> impl Sipper<(), f32> {
