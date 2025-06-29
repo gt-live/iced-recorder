@@ -22,9 +22,19 @@ pub enum Command {
 //    Stop,
 //}
 
+
+// cpal err_fn callback -> ui_thread
 #[derive(Debug, Clone)]
 pub enum UiUpdate {
     Pulse(f32),
     //Error(StreamError),
+    AudioIoError,
     Stop,
+}
+
+// ui_thread -> view
+#[derive(Debug, Clone)]
+pub enum UiMessage {
+    Decibel(f32),
+    AudioIoError,
 }

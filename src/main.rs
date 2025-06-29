@@ -18,7 +18,7 @@ use std::path;
 use rfd::FileDialog;
 use mp3lame_encoder;
 
-use iced_recorder::streams::{self, UiUpdate};
+use iced_recorder::streams::{self, UiMessage, UiUpdate};
 //use iced_recorder::controller::{self, StreamCommand, WavWriterHandle};
 use iced_recorder::storage;
 use iced_recorder::error::RecorderError;
@@ -49,11 +49,16 @@ use iced_recorder::error::RecorderError;
 // 3. counter for duration recorded and file buffer size
 // 4. popup textbox for errors
 
+
+// TODO 2:
+// 1. update ui_thread to also feadback reload option
+// 2. err_fn callback should send a oneshot channel to the ui_thread
+// 3. ui_thread generate the SyncIODevices
+
 pub const WINDOW_INITIAL_WIDTH: f32 = 170.0;
 pub const WINDOW_INITIAL_HEIGHT: f32 = 310.0;
 
 fn main() -> Result<(), iced::Error> {
-
 
     println!("Hello, world!");
     iced::application(Recorder::title, Recorder::update, Recorder::view)
@@ -116,6 +121,7 @@ struct Recorder {
     //wav_writer: Option<Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>>,
     //wav_writer: Option<WavWriterHandle>,
     wav_writer: Option<streams::WriterStream>,
+    ui_sender: Option<Sender<streams::UiUpdate>>,
 
     //// test
     //sender_speaker_2: Option<Sender<streams::Command>>,
@@ -161,6 +167,7 @@ impl Default for Recorder {
             output_stream: None,
             control_thread: None,
             //ui_receiver: None,
+            ui_sender: None,
             ui_thread: None,
             wav_writer: None,
 
@@ -234,10 +241,13 @@ impl Recorder {
                 Task::none()
             },
             Message::SettingsSyncIoDevices => {
+                eprintln!("[Update][SettingsSyncIoDevices]");
                 let _ = self.reload_default_devices();
+                eprintln!("[Update][SettingsSyncIoDevices] pre-reload");
                 if let Err(e) = self.reload_devices() {
                     return Task::done(Message::Error(e))
                 };
+                println!("[Update][SettingsSyncIoDevices] done");
                 Task::none()
             },
             Message::SettingsSelectFilePath => {
@@ -341,10 +351,22 @@ impl Recorder {
         //
 
         let (ui_sender, ui_receiver) = channel();
+        self.ui_sender = Some(ui_sender.clone());
+
         //self.ui_receiver = Some(ui_receiver);
         let (ui_task, handle) = Task::run(
             streams::progress(ui_receiver),
-            |x| Message::PulseUpdate(x.expect("SUBSCRIPTION ERROR")),
+            |x| {
+                let message = match x.expect("[ui_thread_callback] SUBSCRIPTION ERROR") {
+                    streams::UiMessage::Decibel(db) => Message::PulseUpdate(db),
+                    streams::UiMessage::AudioIoError => { 
+                        eprintln!("[ui_thread_callback] AudioIoError");
+                        Message::SettingsSyncIoDevices},
+                    //streams::UiMessage::Stop => Message::Error("[ui_thread_callback] uimessage::stop".to_string()),
+                };
+                message
+            },
+            //|x| Message::PulseUpdate(x.expect("SUBSCRIPTION ERROR")),
         ).abortable();
         //let (task, handle) = Task::sip(
         //    streams::progress(ui_receiver),
@@ -354,11 +376,11 @@ impl Recorder {
         self.ui_thread = Some(handle.abort_on_drop());
 
         let spec = streams::wav_spec_from_configs(&input_config, &output_config)?;
-        let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
+        let err_fn = |err| eprintln!("[writer_stream] an error occurred on stream: {}", err);
         let writer = streams::WriterStream::new(spec, self.recording_path.clone(), err_fn);
         //let writer = Arc::new(Mutex::new(Some(writer)));
         let writer_sender = writer.get_sender();
-        let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
+        let err_fn = |err| eprintln!("[control_stream] an error occurred on stream: {}", err);
         let controller = streams::Controller::new(writer_sender, ui_sender, err_fn);
         let (mut sender_speaker, mut sender_mic) = controller.get_senders();
         //let (mut sender_speaker_2, mut sender_mic_2) = controller.get_senders_2();
@@ -377,9 +399,10 @@ impl Recorder {
         //// Run the input stream on a separate thread.
         //let writer_2 = writer.clone();
 
-        let err_fn = move |err| {
-            eprintln!("an error occurred on stream: {}", err);
-        };
+        let ui_sender = self.ui_sender.take().unwrap();
+        let err_fn_input = streams::gen_input_audio_err_fn(ui_sender.clone());
+        let err_fn_output = streams::gen_output_audio_err_fn(ui_sender.clone());
+        self.ui_sender = Some(ui_sender);
 
         let input_stream = match input_config.sample_format() {
             cpal::SampleFormat::F32 => {
@@ -388,7 +411,7 @@ impl Recorder {
                     //move |data, _| send_frame::<f32>(data, ti_2.clone()),
                     //move |data, _| controller::send_frame::<f32>(data, ti.clone()),
                     move |data, _| sender_mic(data.to_vec()),
-                    err_fn,
+                    err_fn_input,
                     None,
                 ).map_err(|error| RecorderError::BuildStreamError(error.to_string()))?
             },
@@ -402,7 +425,7 @@ impl Recorder {
                     //move |data, _| send_frame::<f32>(data, ti.clone()),
                     //move |data, _| controller::send_frame::<f32>(data, to.clone()),
                     move |data, _| sender_speaker(data.to_vec()),
-                    err_fn,
+                    err_fn_output,
                     None,
                 ).map_err(|error| RecorderError::BuildStreamError(error.to_string()))?
             },
@@ -439,6 +462,8 @@ impl Recorder {
         drop(self.output_stream.take());
         drop(self.control_thread.take()); //should cascade?
         drop(self.wav_writer.take());
+        self.ui_sender.take().unwrap().send(streams::UiUpdate::Stop);
+
         //self.sender_speaker_2 = None;
         //self.sender_mic_2 = None;
         //let join_handle = match self.control_thread.take() {
@@ -539,9 +564,15 @@ impl Recorder {
         self.control_thread = Some(control_thread);
         //let sender_mic_2 = self.sender_mic_2.take().unwrap();
         //let sender_speaker_2 = self.sender_speaker_2.take().unwrap();
-        let err_fn = move |err| {
-            eprintln!("an error occurred on stream: {}", err);
-        };
+        //let err_fn = move |err| {
+        //    eprintln!("an error occurred on stream: {}", err);
+        //};
+
+        let ui_sender = self.ui_sender.take().unwrap();
+        let err_fn_input = streams::gen_input_audio_err_fn(ui_sender.clone());
+        let err_fn_output = streams::gen_output_audio_err_fn(ui_sender.clone());
+        self.ui_sender = Some(ui_sender);
+
         let input_stream = match input_config.sample_format() {
             cpal::SampleFormat::F32 => {
                 //self.input_device.build_input_stream(
@@ -549,7 +580,7 @@ impl Recorder {
                     &input_config.into(),
                     //move |data, _| sender_mic_2.send(streams::Command::Frame(data.to_vec())).unwrap(),
                     move |data, _| sender_mic(data.to_vec()),
-                    err_fn,
+                    err_fn_input,
                     None,
                 ).map_err(|error| RecorderError::BuildStreamError(error.to_string()))?
             },
@@ -563,7 +594,8 @@ impl Recorder {
                     move |data, _| sender_speaker(data.to_vec()),
                     //move |data, _| sender_speaker_2.send(streams::Command::Frame(data.to_vec())).unwrap(),
                     //move |data, _| sender_mic(data.to_vec()),
-                    err_fn,
+                    //err_fn,
+                    err_fn_output,
                     None,
                 ).map_err(|error| RecorderError::BuildStreamError(error.to_string()))?
             },
@@ -621,16 +653,21 @@ impl Recorder {
         let (mut sender_speaker, mut sender_mic) = control_thread.get_senders();
         self.control_thread = Some(control_thread);
 
-        let err_fn = move |err| {
-            eprintln!("an error occurred on stream: {}", err);
-        };
+        //let err_fn = move |err| {
+        //    eprintln!("an error occurred on stream: {}", err);
+        //};
+        let ui_sender = self.ui_sender.take().unwrap();
+        let err_fn_input = streams::gen_input_audio_err_fn(ui_sender.clone());
+        //let err_fn_output = streams::gen_output_audio_err_fn(ui_sender.clone());
+        self.ui_sender = Some(ui_sender);
+
         let input_stream = match input_config.sample_format() {
             cpal::SampleFormat::F32 => {
                 self.input_device.build_input_stream(
                 //new_input_device.build_input_stream(
                     &input_config.into(),
                     move |data, _| sender_mic(data.to_vec()),
-                    err_fn,
+                    err_fn_input, //err_fn,
                     None,
                 ).map_err(|error| RecorderError::BuildStreamError(error.to_string()))?
             },
@@ -674,16 +711,16 @@ impl Recorder {
         let (mut sender_speaker, mut sender_mic) = control_thread.get_senders();
         self.control_thread = Some(control_thread);
 
-        let err_fn = move |err| {
-            eprintln!("an error occurred on stream: {}", err);
-        };
+        let ui_sender = self.ui_sender.take().unwrap();
+        let err_fn_output = streams::gen_output_audio_err_fn(ui_sender.clone());
+        self.ui_sender = Some(ui_sender);
         let output_stream = match output_config.sample_format() {
             cpal::SampleFormat::F32 => {
                 //new_output_device.build_input_stream(
                 self.output_device.build_input_stream(
                     &output_config.into(),
                     move |data, _| sender_speaker(data.to_vec()),
-                    err_fn,
+                    err_fn_output,
                     None,
                 ).map_err(|error| RecorderError::BuildStreamError(error.to_string()))?
             },
