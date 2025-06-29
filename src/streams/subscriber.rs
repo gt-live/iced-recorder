@@ -10,7 +10,12 @@ pub fn progress(rx: Receiver<UiUpdate>) -> impl Stream<Item = Result<UiMessage, 
     try_channel(100, move |mut output| async move {
         loop {
             eprintln!("[progress-notifier] Pre-loop");
+            //let ui_message = match rx.try_recv() {
+
+            //}
             let ui_message = match rx.recv() {
+            //we should have one more for error receivers
+            //let ui_message = match rx.try_recv() {
                 Ok(UiUpdate::Pulse(x)) => {
                     let amp_in_db = f32_to_db(x);
                     eprintln!("[progress-notifier] decibel {amp_in_db}");
@@ -19,10 +24,14 @@ pub fn progress(rx: Receiver<UiUpdate>) -> impl Stream<Item = Result<UiMessage, 
                 Ok(UiUpdate::Stop) => break,
                 Ok(UiUpdate::AudioIoError) => {
                     eprintln!("[progress-notifier] AudioError");
-                    UiMessage::AudioIoError},
+                    //UiMessage::AudioIoError
+                    output.send(UiMessage::AudioIoError).await;
+                    return Ok(());
+                },
                 Err(e) => {
                     println!("[progress-notifier] Error: {}", e);
-                    break;
+                    //break;
+                    continue;
                 },
             };
             eprintln!("[progress-notifier] Pre-send");
@@ -40,14 +49,11 @@ pub fn gen_input_audio_err_fn(sender: Sender<UiUpdate>) -> (impl FnMut(cpal::Str
     gen_audio_err_fn(sender, "input")
 }
 pub fn gen_output_audio_err_fn(sender: Sender<UiUpdate>) -> (impl FnMut(cpal::StreamError) + Send) {
-    //gen_audio_err_fn(sender, "output")
-    move |err| {
-        eprintln!("[audio_err_fn][out] an error occurred while sending UiUpdate: {err}");
-    }
+    gen_audio_err_fn(sender, "output")
 }
 pub fn gen_audio_err_fn(sender: Sender<UiUpdate>, id: &str) -> (impl FnMut(cpal::StreamError) + Send) {
     move |err| {
-        //eprintln!("[audio_err_fn][{id}] an error occurred on stream: {err}");
+        eprintln!("[audio_err_fn][{id}] an error occurred on stream: {err}");
         if let Err(e) = sender.send(UiUpdate::AudioIoError) {
             eprintln!("[audio_err_fn][{id}] an error occurred while sending UiUpdate: {e}");
         };
