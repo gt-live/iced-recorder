@@ -72,9 +72,10 @@ fn main() -> Result<(), iced::Error> {
 enum Message {
     Start,
     Stop,
-    CheckDevices,
+    //CheckDevices,
     SettingsSelectInputDevice(String),
     SettingsSelectOutputDevice(String),
+    SettingsSyncIoDevices,
     SettingsSelectFilePath,
     PulseUpdate(f32),
     Error(RecorderError),
@@ -214,6 +215,9 @@ impl Recorder {
                     self.input_device = device
                     // TODO: code that pauses, creates new stream and continues running
                 };
+                if let Err(e) = self.reload_input_device() {
+                    return Task::done(Message::Error(e))
+                };
                 Task::none()
             },
             Message::SettingsSelectOutputDevice(device) => {
@@ -223,6 +227,16 @@ impl Recorder {
                 {
                     self.output_device = device
                     // TODO: code that pauses, creates new stream and continues running
+                };
+                if let Err(e) = self.reload_output_device() {
+                    return Task::done(Message::Error(e))
+                };
+                Task::none()
+            },
+            Message::SettingsSyncIoDevices => {
+                let _ = self.reload_default_devices();
+                if let Err(e) = self.reload_devices() {
+                    return Task::done(Message::Error(e))
                 };
                 Task::none()
             },
@@ -238,14 +252,6 @@ impl Recorder {
             },
             Message::PulseUpdate(x) => {
                 self.volume = x;
-                Task::none()
-            },
-            Message::CheckDevices => {
-                self.reload_devices();
-                //if self.to_reload_devices() {
-                //    println!("[update] reloading");
-                //    self.reload_devices();
-                //}
                 Task::none()
             },
             Message::Error(e) => {
@@ -292,7 +298,7 @@ impl Recorder {
             .width(Length::FillPortion(1));
         let output_list = container(output_list)
             .width(Length::FillPortion(1));
-        let audio_button: Button<'_, Message> = button("change audio").on_press(Message::CheckDevices);
+        let audio_button: Button<'_, Message> = button("sync audio").on_press(Message::SettingsSyncIoDevices);
         let rand_text: Text<'_, Theme, Renderer> = text(fastrand::u32(0..std::u32::MAX));
         let browse_button: Button<'_, Message> = button("browse").on_press(Message::SettingsSelectFilePath);
         let browse_button = container(browse_button)
@@ -464,42 +470,29 @@ impl Recorder {
     }
 
     //fn reload_devices(&mut self) -> Result<Task<Message>, RecorderError> {
-    fn reload_devices(&mut self) -> Result<bool, RecorderError> {
+    fn reload_devices_old(&mut self) -> Result<bool, RecorderError> {
 
-        //// taken from to_reload_devices
-        //let speaker_list_count = match self.host.input_devices() {
-        //    Ok(devices) => devices.collect::<Vec<_>>().len(),
-        //    Err(_) => 0,
-        //};
-        //let mic_list_count = match self.host.output_devices() {
-        //    Ok(devices) => devices.collect::<Vec<_>>().len(),
-        //    Err(_) => 0,
-        //};
-        //self.speaker_list_count = speaker_list_count;
-        //self.mic_list_count = mic_list_count;
-        //print!("[reload_devices] prevent next tick\n");
         drop(self.output_stream.take());
         drop(self.input_stream.take());
         print!("[reload_devices] post-drop\n");
 
-        let new_input_device = match self.host.input_devices()
-            .unwrap()
-            .last() {
-            Some(device) => device,
-            None => return Ok(false),
-        };
-        let new_output_device = match self.host.output_devices()
-            .unwrap()
-            .last() {
-            Some(device) => device,
-            None => return Ok(false),
-        };
+        //let new_input_device = match self.host.input_devices()
+        //    .unwrap()
+        //    .last() {
+        //    Some(device) => device,
+        //    None => return Ok(false),
+        //};
+        //let new_output_device = match self.host.output_devices()
+        //    .unwrap()
+        //    .last() {
+        //    Some(device) => device,
+        //    None => return Ok(false),
+        //};
 
-        //let new_input_device_name = new_input_device.name().unwrap();
-        //let new_output_device_name = new_output_device.name().unwrap();
-        //print!("[new_input_device_name] {}\n", new_input_device_name);
-        //print!("[new_output_device_name] {}\n", new_output_device_name);
-
+        let new_input_device = self.host.default_input_device()
+            .expect("failed to find input device");
+        let new_output_device = self.host.default_output_device()
+            .expect("failed to find output device");
 
         let input_config = new_input_device
         //let input_config = self.input_device
@@ -551,7 +544,8 @@ impl Recorder {
         };
         let input_stream = match input_config.sample_format() {
             cpal::SampleFormat::F32 => {
-                self.input_device.build_input_stream(
+                //self.input_device.build_input_stream(
+                new_input_device.build_input_stream(
                     &input_config.into(),
                     //move |data, _| sender_mic_2.send(streams::Command::Frame(data.to_vec())).unwrap(),
                     move |data, _| sender_mic(data.to_vec()),
@@ -564,7 +558,7 @@ impl Recorder {
 
         let output_stream = match output_config.sample_format() {
             cpal::SampleFormat::F32 => {
-                self.output_device.build_input_stream(
+                new_output_device.build_input_stream(
                     &output_config.into(),
                     move |data, _| sender_speaker(data.to_vec()),
                     //move |data, _| sender_speaker_2.send(streams::Command::Frame(data.to_vec())).unwrap(),
@@ -590,6 +584,120 @@ impl Recorder {
         println!("[reload_devices] end");
 
         Ok(true)
+    }
+
+    fn reload_default_devices(&mut self) -> Result<(), RecorderError> {
+        let new_input_device = self.host.default_input_device()
+            .expect("failed to find input device");
+        let new_output_device = self.host.default_output_device()
+            .expect("failed to find output device");
+        self.input_device = new_input_device;
+        self.output_device = new_output_device;
+        Ok(())
+    }
+
+    fn reload_devices(&mut self) -> Result<(), RecorderError> {
+        self.reload_input_device()?;
+        self.reload_output_device()
+    }
+    fn reload_input_device(&mut self) -> Result<(), RecorderError> {
+        drop(self.input_stream.take());
+        //drop(self.output_stream.take());
+        print!("[reload_devices] post-drop\n");
+
+        //let new_input_device = self.host.default_input_device()
+        //    .expect("failed to find input device");
+        //let new_output_device = self.host.default_output_device()
+        //    .expect("failed to find output device");
+
+        let input_config = self.input_device
+            .default_input_config()
+            .map_err(|error| RecorderError::StreamConfigError(error.to_string()))?;
+        //let output_config = self.output_device
+        //    .default_output_config()
+        //    .map_err(|error| RecorderError::StreamConfigError(error.to_string()))?;
+
+        let control_thread = self.control_thread.take().unwrap();
+        let (mut sender_speaker, mut sender_mic) = control_thread.get_senders();
+        self.control_thread = Some(control_thread);
+
+        let err_fn = move |err| {
+            eprintln!("an error occurred on stream: {}", err);
+        };
+        let input_stream = match input_config.sample_format() {
+            cpal::SampleFormat::F32 => {
+                self.input_device.build_input_stream(
+                //new_input_device.build_input_stream(
+                    &input_config.into(),
+                    move |data, _| sender_mic(data.to_vec()),
+                    err_fn,
+                    None,
+                ).map_err(|error| RecorderError::BuildStreamError(error.to_string()))?
+            },
+            sample_format =>  return Err(RecorderError::UnsupportedSampleFormat(sample_format, "input".to_string())),
+        };
+
+        //let output_stream = match output_config.sample_format() {
+        //    cpal::SampleFormat::F32 => {
+        //        //new_output_device.build_input_stream(
+        //        self.output_device.build_input_stream(
+        //            &output_config.into(),
+        //            move |data, _| sender_speaker(data.to_vec()),
+        //            err_fn,
+        //            None,
+        //        ).map_err(|error| RecorderError::BuildStreamError(error.to_string()))?
+        //    },
+        //    sample_format =>  return Err(RecorderError::UnsupportedSampleFormat(sample_format, "output".to_string())),
+        //};
+        
+        println!("[reload_devices] before drop stream");
+        input_stream.play().map_err(|error| RecorderError::PlayStreamError(error.to_string()))?;
+        //output_stream.play().map_err(|error| RecorderError::PlayStreamError(error.to_string()))?;
+
+        //print!("[reload_devices] after drop stream");
+        self.input_stream = Some(input_stream);
+        //self.output_stream = Some(output_stream);
+        println!("[reload_devices] end");
+
+        Ok(())
+    }
+
+    fn reload_output_device(&mut self) -> Result<(), RecorderError> {
+        drop(self.output_stream.take());
+        print!("[reload_devices] post-drop\n");
+
+        let output_config = self.output_device
+            .default_output_config()
+            .map_err(|error| RecorderError::StreamConfigError(error.to_string()))?;
+
+        let control_thread = self.control_thread.take().unwrap();
+        let (mut sender_speaker, mut sender_mic) = control_thread.get_senders();
+        self.control_thread = Some(control_thread);
+
+        let err_fn = move |err| {
+            eprintln!("an error occurred on stream: {}", err);
+        };
+        let output_stream = match output_config.sample_format() {
+            cpal::SampleFormat::F32 => {
+                //new_output_device.build_input_stream(
+                self.output_device.build_input_stream(
+                    &output_config.into(),
+                    move |data, _| sender_speaker(data.to_vec()),
+                    err_fn,
+                    None,
+                ).map_err(|error| RecorderError::BuildStreamError(error.to_string()))?
+            },
+            sample_format =>  return Err(RecorderError::UnsupportedSampleFormat(sample_format, "output".to_string())),
+        };
+        
+        println!("[reload_devices] before drop stream");
+        //input_stream.play().map_err(|error| RecorderError::PlayStreamError(error.to_string()))?;
+        output_stream.play().map_err(|error| RecorderError::PlayStreamError(error.to_string()))?;
+
+        self.output_stream = Some(output_stream);
+        println!("[reload_devices] end");
+
+        Ok(())
     }
 } 
 
