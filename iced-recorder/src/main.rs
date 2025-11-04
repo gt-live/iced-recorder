@@ -241,10 +241,14 @@ impl Recorder {
                 Task::none()
             },
             Message::SettingsSyncIoDevices => {
-                eprintln!("[Update][SettingsSyncIoDevices]");
-                let _ = self.reload_default_devices();
-                eprintln!("[Update][SettingsSyncIoDevices] pre-reload");
+                //eprintln!("[Update][SettingsSyncIoDevices]");
+                if let Err(e) = self.reload_default_devices() {
+                    eprintln!("[Update][SettingsSyncIoDevices] reload default error: {e}");
+                    return Task::done(Message::Error(e))
+                }
+                //eprintln!("[Update][SettingsSyncIoDevices] pre-reload");
                 if let Err(e) = self.reload_devices() {
+                    eprintln!("[Update][SettingsSyncIoDevices] reload devices error: {e}");
                     return Task::done(Message::Error(e))
                 };
                 println!("[Update][SettingsSyncIoDevices] done");
@@ -360,7 +364,7 @@ impl Recorder {
                 let message = match x.expect("[ui_thread_callback] SUBSCRIPTION ERROR") {
                     streams::UiMessage::Decibel(db) => Message::PulseUpdate(db),
                     streams::UiMessage::AudioIoError => { 
-                        eprintln!("[ui_thread_callback] AudioIoError");
+                        //eprintln!("[ui_thread_callback] AudioIoError");
                         Message::SettingsSyncIoDevices},
                     //streams::UiMessage::Stop => Message::Error("[ui_thread_callback] uimessage::stop".to_string()),
                 };

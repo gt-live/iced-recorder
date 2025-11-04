@@ -255,7 +255,7 @@ where E: FnMut(StreamError) + Send + 'static,
             //return Err(RecorderError::StorageStreamWriteError(e.to_string()));
         }
         if let Err(e) = run_context.ui_sender.send(UiUpdate::Pulse(ui_sample)) {
-            println!("[write-frame] error sending ui sample: {}", ui_sample);
+            println!("[run_input] error sending ui sample: {}", ui_sample);
         }
     }
     println!("break for reasons");

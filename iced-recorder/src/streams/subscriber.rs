@@ -10,12 +10,7 @@ pub fn progress(rx: Receiver<UiUpdate>) -> impl Stream<Item = Result<UiMessage, 
     try_channel(100, move |mut output| async move {
         loop {
             eprintln!("[progress-notifier] Pre-loop");
-            //let ui_message = match rx.try_recv() {
-
-            //}
             let ui_message = match rx.recv() {
-            //we should have one more for error receivers
-            //let ui_message = match rx.try_recv() {
                 Ok(UiUpdate::Pulse(x)) => {
                     let amp_in_db = f32_to_db(x);
                     eprintln!("[progress-notifier] decibel {amp_in_db}");
@@ -25,8 +20,18 @@ pub fn progress(rx: Receiver<UiUpdate>) -> impl Stream<Item = Result<UiMessage, 
                 Ok(UiUpdate::AudioIoError) => {
                     eprintln!("[progress-notifier] AudioError");
                     //UiMessage::AudioIoError
-                    output.send(UiMessage::AudioIoError).await;
-                    return Ok(());
+                    if let Err(e) = output.send(UiMessage::AudioIoError).await {
+                        eprintln!("[progress-notifier] Err awaiting or send AudioError: {e}");
+                    }
+                    //let _ = output.send(UiMessage::AudioIoError);
+                    eprintln!("[progress-notifier] Done AudioError");
+                    //return Ok(());
+                    // if i continue here, it hangs. app side doesnt drop 
+                    // if i return and break here, there is no UI_thread for controller_thread to
+                    // send to. but i can alwasspin up a new one with the appropriate receiver i
+                    // think... no i cant i think, receiver cannot be cloned, need to drop the
+                    // control thread too, the downstream seems fine though
+                    continue;
                 },
                 Err(e) => {
                     println!("[progress-notifier] Error: {}", e);
@@ -34,12 +39,12 @@ pub fn progress(rx: Receiver<UiUpdate>) -> impl Stream<Item = Result<UiMessage, 
                     continue;
                 },
             };
-            eprintln!("[progress-notifier] Pre-send");
+            //eprintln!("[progress-notifier] Pre-send");
             //output.send(ui_message).await;
             if let Err(e) = output.send(ui_message).await {
                 eprintln!("[ui_thread] error occurred while sending UiMessage: {e}");
             };
-            eprintln!("[progress-notifier] Post-send");
+            //eprintln!("[progress-notifier] Post-send");
         }
         Ok(())
     })
