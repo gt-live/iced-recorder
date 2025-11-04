@@ -1,0 +1,11 @@
+[package]
+name = "simple-recorder-1"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hound = "3.5"
+cpal = "0.15"
+#cpal = { version = "0.15", features = ["asio"] }
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1"
