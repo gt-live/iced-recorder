@@ -1,0 +1,16 @@
+[package]
+name = "iced-recorder"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+#iced = { version = "0.14.1", features = ["sipper"] }
+#iced = "0.13.1"
+iced = { version = "0.13.1", features = ["tokio"] }
+cpal = "0.15.3"
+hound = "3.5.1"
+thiserror = "2.0.12"
+rfd = "0.15.3"
+mp3lame-encoder = "0.2.1"
+fastrand = "2.3.0"
+
